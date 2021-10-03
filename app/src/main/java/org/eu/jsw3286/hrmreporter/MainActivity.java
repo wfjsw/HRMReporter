@@ -11,6 +11,7 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.net.ConnectivityManager;
+import android.net.ConnectivityManager.NetworkCallback;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkRequest;
@@ -28,7 +29,7 @@ import org.eclipse.paho.client.mqttv3.IMqttToken;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eu.jsw3286.hrmreporter.databinding.ActivityMainBinding;
 
-public class MainActivity extends Activity implements SensorEventListener {
+public class MainActivity extends Activity implements SensorEventListener, IMqttActionListener {
 
     private TextView mHR;
     private TextView tAccu;
@@ -43,11 +44,13 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     private boolean state = false;
 
+    private ConnectivityManager connectivityManager;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        ConnectivityManager connectivityManager = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+        connectivityManager  = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
 
         sharedPref = this.getSharedPreferences("org.eu.jsw3286.hrmreporter", Context.MODE_PRIVATE);
 
@@ -74,25 +77,12 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         });
 
-        ConnectivityManager.NetworkCallback callback = new ConnectivityManager.NetworkCallback() {
-            public void onAvailable(Network network) {
-                super.onAvailable(network);
-                // The Wi-Fi network has been acquired, bind it to use this network by default
-                connectivityManager.bindProcessToNetwork(network);
+        WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = 0.3F;
+        getWindow().setAttributes(lp);
 
-                startMeasure();
-            }
-
-            public void onLost(Network network) {
-                super.onLost(network);
-                // The Wi-Fi network has been disconnected
-            }
-        };
-        connectivityManager.requestNetwork(
-                new NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),
-                callback
-        );
-
+        bindProcessToWifi();
+        startMeasure();
     }
 
 
@@ -103,7 +93,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         Log.d("Sensor Status", "Sensor registered: " + (sensorRegistered ? "y" : "n"));
         state = sensorRegistered;
 
-        this.connectMQTT();
     }
 
     private void connectMQTT() {
@@ -121,13 +110,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         this.currentAddr = mqttServer;
         if (mqttServer.length() > 4) {
             try {
-                this.mqtt = new MQTTPublisher(mqttServer);
-                IMqttToken connToken = this.mqtt.connect();
-                connToken.waitForCompletion();
-                if (connToken.isComplete()) {
-                    this.connected = true;
-                    this.txtConn.setText("Yes");
-                }
+                this.mqtt = new MQTTPublisher(this.getApplicationContext(), mqttServer);
+                this.mqtt.connect(this);
             } catch (MqttException e) {
                 Log.e("MQTTProvider", Log.getStackTraceString(e));
             }
@@ -140,6 +124,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         Log.d("Sensor Status", "Sensor unregistered");
         mHR.setText("---");
         state = false;
+
+        connectivityManager.releaseNetworkRequest(null);
 
         if (this.mqtt != null) {
             try {
@@ -182,14 +168,54 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override
     protected void onPause() {
-        super.onPause();
         this.stopMeasure();
+        this.unbindProcessFromWifi();
+        super.onPause();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        this.bindProcessToWifi();
         this.startMeasure();
     }
 
+    private void bindProcessToWifi() {
+        NetworkCallback networkCallback = new NetworkCallback() {
+            @Override
+            public void onAvailable(Network network) {
+                super.onAvailable(network);
+                // The Wi-Fi network has been acquired, bind it to use this network by default
+                connectivityManager.bindProcessToNetwork(network);
+
+                connectMQTT();
+            }
+
+            @Override
+            public void onLost(Network network) {
+                super.onLost(network);
+                // The Wi-Fi network has been disconnected
+            }
+        };
+        connectivityManager.requestNetwork(
+                new NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build(),
+                networkCallback
+        );
+    }
+
+    private void unbindProcessFromWifi() {
+        connectivityManager.bindProcessToNetwork(null);
+    }
+
+    @Override
+    public void onSuccess(IMqttToken asyncActionToken) {
+        this.connected = true;
+        this.txtConn.setText("Yes");
+    }
+
+    @Override
+    public void onFailure(IMqttToken asyncActionToken, Throwable exception) {
+        Log.e("MQTTProvider", Log.getStackTraceString(exception));
+        return;
+    }
 }
